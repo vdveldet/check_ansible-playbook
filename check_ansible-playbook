@@ -1,0 +1,83 @@
+#!/usr/bin/env python
+import argparse
+import json
+import sys
+import os
+import tempfile
+
+from subprocess import Popen, PIPE
+
+#Process the different input here
+parser = argparse.ArgumentParser(description='Check the outcome of playbook. This will run the ansible playbook in -D -C')
+parser.add_argument('--playdir', required=True, action='store', dest='playdir',
+                    help='Location of the dir containing the ansible-playbooks')
+parser.add_argument('--play-book', required=True, action='store', dest='playbook',
+                    help='the playbookname that will be executed')
+parser.add_argument('--hostfile', required=True, action='store', dest='hostfile',
+                    help='the hostfile in the playdir to use')
+parser.add_argument('--NOdryrun', type=int,
+                    help='Will actually make the changes')
+
+args = parser.parse_args()
+
+#change to working dir.
+os.chdir(args.playdir)
+
+#Create an temporary environment and execute the play-book
+ansible_temp = tempfile.NamedTemporaryFile()
+
+# check if local config file in playdir, if so the info needs to be used.
+ansible_temp.write('[defaults]\n')
+ansible_temp.write('stdout_callback = json\n')
+ansible_temp.flush()
+
+# alternate environment to include the special ansible config.
+my_env = os.environ.copy()
+ansible_var = "ANSIBLE_CONFIG=%s;" % ansible_temp.name
+my_env["ANSIBLE_CONFIG"] = ansible_temp.name
+
+# Run the normal ansible command using special environment
+p = Popen(["ansible-playbook","-D", "-C", "-i", args.hostfile, args.playbook], stdin=PIPE, stdout=PIPE, stderr=PIPE, env=my_env)
+output, err = p.communicate()
+rc = p.returncode
+
+# initialiase ouput counters
+result={"failures": 0, "skipped": 0, "changed": 0, "ok": 0, "unreachable": 0}
+
+# process the stats output
+json_object = json.loads(output)
+stats_object=json_object["stats"]
+for system in stats_object:
+    value = stats_object[system]
+
+    result["failures"] = result["failures"] + value["failures"]
+    result["skipped"] = result["skipped"] + value["skipped"]
+    result["changed"] = result["changed"] + value["changed"]
+    result["ok"] = result["ok"] + value["ok"]
+    result["unreachable"] = result["unreachable"] + value["unreachable"]
+
+# prepare the exitCode and text
+exitCode=0
+exitText="PLAYBOOK OK : %s" % (args.playbook)
+
+if result["unreachable"] != 0 :
+    exitText="UNREACHABLE : The system is unreachable"
+    exitCode=1
+
+if result["changed"] != 0 :
+    exitText="CHANGED : Changes are pending"
+    exitCode=1
+
+if result["failures"] != 0 :
+    exitText="CRITICAL : ansible playbook is broken"
+    exitCode=2
+
+# return exit text and exit using corect exitCode
+print "%s | ok=%s changed=%s failures=%s skipped=%s unreachable=%s" % (
+    exitText,
+    result["ok"],
+    result["changed"],
+    result["failures"],
+    result["skipped"],
+    result["unreachable"])
+exit(exitCode)
